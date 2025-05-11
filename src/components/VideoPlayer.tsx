@@ -2,18 +2,10 @@
 import React, { useRef, useState, useEffect } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, Eye, Repeat, Users } from "lucide-react";
+import { Play, Pause, Eye, Repeat, Users, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-
-interface Marker {
-  id: string;
-  type: 'eye-contact' | 'repetitive-movement' | 'social-reciprocity';
-  x: number;
-  y: number;
-  size: number;
-  timestamp: number; // When this marker should appear
-  duration: number; // How long it should remain visible
-}
+import { initModels, analyzeVideoFrame, generateAnalysisResult, type Marker } from "@/utils/aiAnalysis";
+import { useToast } from "@/hooks/use-toast";
 
 interface VideoPlayerProps {
   videoUrl: string;
@@ -21,101 +13,127 @@ interface VideoPlayerProps {
 }
 
 const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete }) => {
+  const { toast } = useToast();
   const videoRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const requestRef = useRef<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [markers, setMarkers] = useState<Marker[]>([]);
   const [visibleMarkers, setVisibleMarkers] = useState<Marker[]>([]);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [modelsLoaded, setModelsLoaded] = useState(false);
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const [analysisComplete, setAnalysisComplete] = useState(false);
+  
+  // Store analysis data
+  const [eyeContactScores, setEyeContactScores] = useState<number[]>([]);
+  const [repetitiveMovementScores, setRepetitiveMovementScores] = useState<number[]>([]);
+  const [socialReciprocityScores, setSocialReciprocityScores] = useState<number[]>([]);
+  const [detectedPoses, setDetectedPoses] = useState<any[]>([]);
+  const [detectedSocialElements, setDetectedSocialElements] = useState<any[]>([]);
+  const [allDetectedMarkers, setAllDetectedMarkers] = useState<Marker[]>([]);
 
-  // Generate sample markers for the demo
+  // Load AI models on component mount
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const loaded = await initModels();
+        setModelsLoaded(loaded);
+        if (loaded) {
+          toast({
+            title: "AI Models Loaded",
+            description: "Ready to analyze video for autism detection markers.",
+          });
+        } else {
+          toast({
+            title: "Error Loading Models",
+            description: "Could not load AI models. Analysis will be limited.",
+            variant: "destructive",
+          });
+        }
+      } catch (error) {
+        console.error("Error loading models:", error);
+        toast({
+          title: "Error Loading Models",
+          description: "Could not load AI models. Analysis will be limited.",
+          variant: "destructive",
+        });
+      }
+    };
+    
+    loadModels();
+    
+    return () => {
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current);
+      }
+    };
+  }, [toast]);
+
+  // Handle video metadata loading
+  const handleLoadedMetadata = () => {
+    if (videoRef.current) {
+      setDuration(videoRef.current.duration);
+    }
+  };
+
+  // Handle video time updates
+  const handleTimeUpdate = () => {
+    if (videoRef.current) {
+      setCurrentTime(videoRef.current.currentTime);
+    }
+  };
+
+  // Analyze the current video frame
+  const analyzeCurrentFrame = async () => {
+    if (!videoRef.current || !modelsLoaded || !analysisStarted || isAnalyzing) return;
+    
+    setIsAnalyzing(true);
+    
+    try {
+      // Only analyze every 1 second (or another interval)
+      if (Math.floor(currentTime) % 1 === 0) {
+        const result = await analyzeVideoFrame(
+          videoRef.current, 
+          currentTime,
+          detectedPoses,
+          detectedSocialElements
+        );
+        
+        // Update scores
+        setEyeContactScores(prev => [...prev, result.frameAnalysis.eyeContact.score]);
+        setRepetitiveMovementScores(prev => [...prev, result.frameAnalysis.repetitiveMovements.score]);
+        setSocialReciprocityScores(prev => [...prev, result.frameAnalysis.socialReciprocity.score]);
+        
+        // Update detections
+        setDetectedPoses(result.detectedPoses);
+        setDetectedSocialElements(result.detectedSocialElements);
+        
+        // Update markers
+        setMarkers(result.markers);
+        setAllDetectedMarkers(prev => [...prev, ...result.markers]);
+      }
+    } catch (error) {
+      console.error("Error analyzing frame:", error);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
+  // Animation loop for analysis
+  useEffect(() => {
+    if (isPlaying && modelsLoaded && analysisStarted) {
+      analyzeCurrentFrame();
+    }
+  }, [currentTime, isPlaying, modelsLoaded, analysisStarted]);
+
+  // Update visible markers based on current time
   useEffect(() => {
     if (!analysisStarted) return;
 
-    // Clear any existing markers
-    setMarkers([]);
-
-    // Sample markers for eye contact detection
-    const eyeContactMarkers = [
-      {
-        id: 'eye-1',
-        type: 'eye-contact' as const,
-        x: 45,
-        y: 25,
-        size: 40,
-        timestamp: 2,
-        duration: 4
-      },
-      {
-        id: 'eye-2',
-        type: 'eye-contact' as const,
-        x: 55,
-        y: 25,
-        size: 40,
-        timestamp: 8,
-        duration: 3
-      }
-    ];
-
-    // Sample markers for repetitive movements
-    const repetitiveMovementMarkers = [
-      {
-        id: 'rep-1',
-        type: 'repetitive-movement' as const,
-        x: 70,
-        y: 60,
-        size: 60,
-        timestamp: 4,
-        duration: 5
-      },
-      {
-        id: 'rep-2',
-        type: 'repetitive-movement' as const,
-        x: 30,
-        y: 60,
-        size: 60,
-        timestamp: 12,
-        duration: 4
-      }
-    ];
-
-    // Sample markers for social reciprocity
-    const socialReciprocityMarkers = [
-      {
-        id: 'soc-1',
-        type: 'social-reciprocity' as const,
-        x: 50,
-        y: 70,
-        size: 70,
-        timestamp: 6,
-        duration: 3
-      },
-      {
-        id: 'soc-2',
-        type: 'social-reciprocity' as const,
-        x: 40,
-        y: 50,
-        size: 50,
-        timestamp: 10,
-        duration: 4
-      }
-    ];
-
-    setMarkers([
-      ...eyeContactMarkers,
-      ...repetitiveMovementMarkers,
-      ...socialReciprocityMarkers
-    ]);
-  }, [analysisStarted]);
-
-  // Update visible markers based on current video time
-  useEffect(() => {
-    if (!analysisStarted) return;
-
-    const currentVisible = markers.filter(marker => {
+    const currentVisible = allDetectedMarkers.filter(marker => {
       const startTime = marker.timestamp;
       const endTime = startTime + marker.duration;
       return currentTime >= startTime && currentTime <= endTime;
@@ -124,31 +142,29 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete 
     setVisibleMarkers(currentVisible);
 
     // Check if analysis is complete
-    if (currentTime >= duration * 0.9 && !analysisComplete) {
+    if (currentTime >= duration * 0.9 && !analysisComplete && eyeContactScores.length > 0) {
       setAnalysisComplete(true);
+      
+      // Generate final analysis results
+      const finalResults = generateAnalysisResult(
+        eyeContactScores,
+        repetitiveMovementScores,
+        socialReciprocityScores,
+        allDetectedMarkers
+      );
+      
       if (onAnalysisComplete) {
-        onAnalysisComplete({
-          eyeContact: { score: 68, risk: 'moderate' },
-          repetitiveMovements: { score: 74, risk: 'moderate' },
-          socialReciprocity: { score: 62, risk: 'high' },
-          overallRisk: 'moderate'
-        });
+        onAnalysisComplete(finalResults);
       }
+      
+      toast({
+        title: "Analysis Complete",
+        description: "Video analysis has been completed.",
+      });
     }
-  }, [currentTime, markers, analysisStarted, duration, analysisComplete, onAnalysisComplete]);
+  }, [currentTime, allDetectedMarkers, analysisStarted, duration, analysisComplete, eyeContactScores, repetitiveMovementScores, socialReciprocityScores, onAnalysisComplete, toast]);
 
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
-    }
-  };
-
-  const handleLoadedMetadata = () => {
-    if (videoRef.current) {
-      setDuration(videoRef.current.duration);
-    }
-  };
-
+  // Handle play/pause toggle
   const togglePlayPause = () => {
     if (videoRef.current) {
       if (isPlaying) {
@@ -158,8 +174,12 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete 
       }
       setIsPlaying(!isPlaying);
       
-      if (!analysisStarted) {
+      if (!analysisStarted && modelsLoaded) {
         setAnalysisStarted(true);
+        toast({
+          title: "Analysis Started",
+          description: "AI is now analyzing the video for autism markers.",
+        });
       }
     }
   };
@@ -178,19 +198,33 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete 
           onEnded={() => setIsPlaying(false)}
         />
         
-        {/* Render markers */}
+        {/* AI Model loading indicator */}
+        {!modelsLoaded && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/50 z-10">
+            <div className="text-center text-white">
+              <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
+              <p className="text-sm">Loading AI Models...</p>
+              <p className="text-xs mt-1">This may take a moment</p>
+            </div>
+          </div>
+        )}
+        
+        {/* Render markers from AI detection */}
         {visibleMarkers.map((marker) => (
           <div
             key={marker.id}
             className={cn(
-              'feature-marker animate-pulse-marker',
-              `${marker.type}-marker`
+              'feature-marker animate-pulse-marker absolute rounded-full',
+              marker.type === 'eye-contact' ? 'bg-primary/30 border border-primary' : 
+              marker.type === 'repetitive-movement' ? 'bg-secondary/30 border border-secondary' : 
+              'bg-accent/30 border border-accent'
             )}
             style={{
               left: `${marker.x}%`,
               top: `${marker.y}%`,
               width: `${marker.size}px`,
               height: `${marker.size}px`,
+              transform: 'translate(-50%, -50%)'
             }}
           />
         ))}
@@ -202,6 +236,7 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete 
               size="icon" 
               className="text-white hover:bg-white/20 h-9 w-9" 
               onClick={togglePlayPause}
+              disabled={!modelsLoaded}
             >
               {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5" />}
             </Button>
@@ -228,6 +263,22 @@ const VideoPlayer: React.FC<VideoPlayerProps> = ({ videoUrl, onAnalysisComplete 
               style={{ width: `${(currentTime / duration) * 100}%` }} 
             />
           </div>
+          
+          {/* Analysis status indicator */}
+          {analysisStarted && (
+            <div className="mt-2 flex items-center justify-center">
+              {isAnalyzing ? (
+                <span className="text-xs text-white flex items-center">
+                  <Loader2 className="h-3 w-3 animate-spin mr-1" />
+                  AI Analyzing...
+                </span>
+              ) : (
+                <span className="text-xs text-white">
+                  AI Monitoring{eyeContactScores.length > 0 ? ` (${eyeContactScores.length} frames analyzed)` : ''}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </Card>
